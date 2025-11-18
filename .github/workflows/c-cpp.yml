@@ -1,5 +1,10 @@
 name: RuneC2 CI/CD
 
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+  
 on:
   push:
     branches: [ main, develop ]
@@ -98,7 +103,7 @@ jobs:
         install: mingw-w64-ucrt-x86_64-gcc
         
     - name: Run CodeQL Analysis
-      uses: github/codeql-action/init@v3
+      uses: github/codeql-action/init@v4
       with:
         languages: cpp
         
