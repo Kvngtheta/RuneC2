@@ -103,9 +103,10 @@ jobs:
         install: mingw-w64-ucrt-x86_64-gcc
         
     - name: Run CodeQL Analysis
-      uses: github/codeql-action/init@v4
+      uses: github/codeql-action/init@v2
       with:
         languages: cpp
+        tools-version: 4.31.3
         
     - name: Build for Windows security analysis
       shell: msys2 {0}
