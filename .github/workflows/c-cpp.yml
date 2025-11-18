@@ -101,7 +101,7 @@ jobs:
         
     - name: Run cppcheck
       run: |
-        cppcheck --enable=all --std=c++14 --platform=native --error-exitcode=1 \
+        cppcheck --enable=all --std=c++14 --language=c++ --platform=native --error-exitcode=1 \
           --suppress=missingIncludeSystem --suppress=unmatchedSuppression \
           *.cpp *.h other/*.cpp
         
