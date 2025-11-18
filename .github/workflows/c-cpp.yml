@@ -1,23 +1,202 @@
-name: C/C++ CI
+name: RuneC2 CI/CD
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main, develop ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ main ]
 
 jobs:
-  build:
-
-    runs-on: ubuntu-latest
-
+  build-windows:
+    runs-on: windows-latest
+    
     steps:
-    - uses: actions/checkout@v4
-    - name: configure
-      run: ./configure
-    - name: make
-      run: make
-    - name: make check
-      run: make check
-    - name: make distcheck
-      run: make distcheck
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup MinGW
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: UCRT64
+        update: true
+        install: >-
+          mingw-w64-ucrt-x86_64-gcc
+          mingw-w64-ucrt-x86_64-make
+          mingw-w64-ucrt-x86_64-cmake
+          
+    - name: Build Agent
+      shell: msys2 {0}
+      run: |
+        g++ -std=c++14 agent.cpp myfunctions.cpp agent-functions.cpp -o agent.exe -lws2_32 -liphlpapi -lcrypt32
+        
+    - name: Build Satellite
+      shell: msys2 {0}
+      run: |
+        g++ -std=c++14 satellite.cpp myfunctions.cpp agent-functions.cpp -o satellite.exe -lws2_32 -liphlpapi -lcrypt32
+        
+    - name: Build Server
+      shell: msys2 {0}
+      run: |
+        cd other
+        g++ -std=c++14 server.cpp -o server.exe -lws2_32 -liphlpapi -lcrypt32
+        cd ..
+        
+    - name: Upload Windows Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: runec2-windows
+        path: |
+          agent.exe
+          satellite.exe
+          other/server.exe
+        retention-days: 30
+
+  build-linux:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential g++ make
+        
+    - name: Build Agent (Linux)
+      run: |
+        g++ -std=c++14 agent.cpp myfunctions.cpp agent-functions.cpp -o agent -pthread
+        
+    - name: Build Satellite (Linux)
+      run: |
+        g++ -std=c++14 satellite.cpp myfunctions.cpp agent-functions.cpp -o satellite -pthread
+        
+    - name: Build Server (Linux)
+      run: |
+        cd other
+        g++ -std=c++14 server.cpp -o server -pthread
+        cd ..
+        
+    - name: Upload Linux Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: runec2-linux
+        path: |
+          agent
+          satellite
+          other/server
+        retention-days: 30
+
+  code-analysis:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install analysis tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cppcheck clang-format
+        
+    - name: Run cppcheck
+      run: |
+        cppcheck --enable=all --std=c++14 --platform=native --error-exitcode=1 \
+          --suppress=missingIncludeSystem --suppress=unmatchedSuppression \
+          *.cpp *.h other/*.cpp
+        
+    - name: Check code formatting
+      run: |
+        clang-format --style=file --dry-run --Werror *.cpp *.h other/*.cpp
+
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Run CodeQL Analysis
+      uses: github/codeql-action/init@v3
+      with:
+        languages: cpp
+        
+    - name: Build for analysis
+      run: |
+        g++ -std=c++14 agent.cpp myfunctions.cpp agent-functions.cpp -o agent -pthread
+        g++ -std=c++14 satellite.cpp myfunctions.cpp agent-functions.cpp -o satellite -pthread
+        cd other && g++ -std=c++14 server.cpp -o server -pthread
+        
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+
+  create-release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download Windows artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: runec2-windows
+        path: ./windows-build/
+        
+    - name: Download Linux artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: runec2-linux
+        path: ./linux-build/
+        
+    - name: Create release archives
+      run: |
+        # Create Windows release
+        cd windows-build
+        zip -r ../runec2-windows.zip .
+        cd ..
+        
+        # Create Linux release
+        cd linux-build
+        tar -czf ../runec2-linux.tar.gz .
+        cd ..
+        
+    - name: Generate release tag
+      id: tag
+      run: |
+        TAG="v$(date +%Y%m%d)-$(echo ${{ github.sha }} | head -c7)"
+        echo "tag=$TAG" >> $GITHUB_OUTPUT
+        
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.tag.outputs.tag }}
+        name: RuneC2 Release ${{ steps.tag.outputs.tag }}
+        body: |
+          ## RuneC2 Automated Release
+          
+          Built from commit: ${{ github.sha }}
+          
+          ### Components:
+          - **Agent**: C2 agent executable
+          - **Satellite**: Satellite server for agent management
+          - **Server**: Team server for satellite coordination
+          
+          ### Platforms:
+          - Windows (MinGW build)
+          - Linux (GCC build)
+          
+          ### Usage:
+          1. Download the appropriate archive for your platform
+          2. Extract the files
+          3. Run the executables with appropriate permissions
+          
+        files: |
+          runec2-windows.zip
+          runec2-linux.tar.gz
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
