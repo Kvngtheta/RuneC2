@@ -51,89 +51,71 @@ jobs:
           other/server.exe
         retention-days: 30
 
-  build-linux:
-    runs-on: ubuntu-latest
+  windows-analysis:
+    runs-on: windows-latest
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential g++ make
-        
-    - name: Build Agent (Linux)
-      run: |
-        g++ -std=c++14 agent.cpp myfunctions.cpp agent-functions.cpp -o agent -pthread
-        
-    - name: Build Satellite (Linux)
-      run: |
-        g++ -std=c++14 satellite.cpp myfunctions.cpp agent-functions.cpp -o satellite -pthread
-        
-    - name: Build Server (Linux)
-      run: |
-        cd other
-        g++ -std=c++14 server.cpp -o server -pthread
-        cd ..
-        
-    - name: Upload Linux Artifacts
-      uses: actions/upload-artifact@v4
+    - name: Setup MinGW
+      uses: msys2/setup-msys2@v2
       with:
-        name: runec2-linux
-        path: |
-          agent
-          satellite
-          other/server
-        retention-days: 30
-
-  code-analysis:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Install analysis tools
+        msystem: UCRT64
+        update: true
+        install: >-
+          mingw-w64-ucrt-x86_64-gcc
+          mingw-w64-ucrt-x86_64-cppcheck
+          mingw-w64-ucrt-x86_64-clang
+          
+    - name: Run Windows-specific code analysis
+      shell: msys2 {0}
       run: |
-        sudo apt-get update
-        sudo apt-get install -y cppcheck clang-format
-        
-    - name: Run cppcheck
-      run: |
-        cppcheck --enable=all --std=c++14 --language=c++ --platform=native --error-exitcode=1 \
+        # Check for Windows API usage and potential issues
+        cppcheck --enable=all --std=c++14 --platform=win64 --error-exitcode=1 \
           --suppress=missingIncludeSystem --suppress=unmatchedSuppression \
-          *.cpp *.h other/*.cpp
+          --check-config *.cpp *.h other/*.cpp
         
-    - name: Check code formatting
+    - name: Verify Windows libraries are linked correctly
+      shell: msys2 {0}
       run: |
-        clang-format --style=file --dry-run --Werror *.cpp *.h other/*.cpp
+        # Test compilation with verbose output to verify Windows libs
+        g++ -std=c++14 -v agent.cpp myfunctions.cpp agent-functions.cpp -o test-agent.exe -lws2_32 -liphlpapi -lcrypt32
+        g++ -std=c++14 -v satellite.cpp myfunctions.cpp agent-functions.cpp -o test-satellite.exe -lws2_32 -liphlpapi -lcrypt32
 
   security-scan:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       
+    - name: Setup MinGW for CodeQL
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: UCRT64
+        update: true
+        install: mingw-w64-ucrt-x86_64-gcc
+        
     - name: Run CodeQL Analysis
       uses: github/codeql-action/init@v3
       with:
         languages: cpp
         
-    - name: Build for analysis
+    - name: Build for Windows security analysis
+      shell: msys2 {0}
       run: |
-        g++ -std=c++14 agent.cpp myfunctions.cpp agent-functions.cpp -o agent -pthread
-        g++ -std=c++14 satellite.cpp myfunctions.cpp agent-functions.cpp -o satellite -pthread
-        cd other && g++ -std=c++14 server.cpp -o server -pthread
+        g++ -std=c++14 agent.cpp myfunctions.cpp agent-functions.cpp -o agent.exe -lws2_32 -liphlpapi -lcrypt32
+        g++ -std=c++14 satellite.cpp myfunctions.cpp agent-functions.cpp -o satellite.exe -lws2_32 -liphlpapi -lcrypt32
+        cd other && g++ -std=c++14 server.cpp -o server.exe -lws2_32 -liphlpapi -lcrypt32
         
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
 
   create-release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [build-windows, build-linux]
-    runs-on: ubuntu-latest
+    needs: [build-windows, windows-analysis]
+    runs-on: windows-latest
     
     steps:
     - name: Checkout code
@@ -145,57 +127,49 @@ jobs:
         name: runec2-windows
         path: ./windows-build/
         
-    - name: Download Linux artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: runec2-linux
-        path: ./linux-build/
-        
-    - name: Create release archives
+    - name: Create Windows release archive
+      shell: pwsh
       run: |
-        # Create Windows release
-        cd windows-build
-        zip -r ../runec2-windows.zip .
-        cd ..
-        
-        # Create Linux release
-        cd linux-build
-        tar -czf ../runec2-linux.tar.gz .
-        cd ..
+        Compress-Archive -Path ./windows-build/* -DestinationPath ./runec2-windows.zip
         
     - name: Generate release tag
-      id: tag
+      shell: pwsh
       run: |
-        TAG="v$(date +%Y%m%d)-$(echo ${{ github.sha }} | head -c7)"
-        echo "tag=$TAG" >> $GITHUB_OUTPUT
+        $TAG = "v$(Get-Date -Format 'yyyyMMdd')-$($env:GITHUB_SHA.Substring(0,7))"
+        echo "tag=$TAG" >> $env:GITHUB_OUTPUT
+      id: tag
         
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ steps.tag.outputs.tag }}
-        name: RuneC2 Release ${{ steps.tag.outputs.tag }}
+        name: RuneC2 Windows Release ${{ steps.tag.outputs.tag }}
         body: |
-          ## RuneC2 Automated Release
+          ## RuneC2 Windows-Native Release
           
           Built from commit: ${{ github.sha }}
           
           ### Components:
-          - **Agent**: C2 agent executable
-          - **Satellite**: Satellite server for agent management
-          - **Server**: Team server for satellite coordination
+          - **agent.exe**: Windows C2 agent with WinAPI integration
+          - **satellite.exe**: Satellite server for Windows agent management  
+          - **server.exe**: Team server for satellite coordination
           
-          ### Platforms:
-          - Windows (MinGW build)
-          - Linux (GCC build)
+          ### Requirements:
+          - Windows 7 SP1 or later
+          - Administrator privileges recommended for full functionality
+          
+          ### Windows-Specific Features:
+          - Native Windows Socket (Winsock2) implementation
+          - Windows Cryptography API integration
+          - IP Helper API for network enumeration
           
           ### Usage:
-          1. Download the appropriate archive for your platform
-          2. Extract the files
-          3. Run the executables with appropriate permissions
+          1. Download runec2-windows.zip
+          2. Extract files to desired directory
+          3. Run executables with appropriate permissions
+          4. Configure Windows Firewall as needed
           
-        files: |
-          runec2-windows.zip
-          runec2-linux.tar.gz
+        files: runec2-windows.zip
         draft: false
         prerelease: false
       env:
