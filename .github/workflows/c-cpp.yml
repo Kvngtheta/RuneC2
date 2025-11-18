@@ -103,7 +103,7 @@ jobs:
         install: mingw-w64-ucrt-x86_64-gcc
         
     - name: Run CodeQL Analysis
-      uses: github/codeql-action/init@v4
+      uses: github/codeql-action/init@v3
       with:
         languages: cpp
        # version: 4.31.3
